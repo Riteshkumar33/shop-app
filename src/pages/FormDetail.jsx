@@ -180,7 +180,7 @@ const FormDetail = () => {
                         {(doc.sizeBytes / 1024).toFixed(0)} KB
                       </div>
                     </div>
-                    <a href={`http://localhost:4000${doc.url}`} target="_blank" rel="noopener noreferrer"
+                    <a href={`https://shop-backend-qspq.onrender.com${doc.url}`} target="_blank" rel="noopener noreferrer"
                       className="btn btn--ghost btn--icon btn--sm">
                       <HiOutlineDownload />
                     </a>
