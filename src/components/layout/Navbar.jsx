@@ -1,10 +1,37 @@
+import { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
-import { HiOutlineMenu, HiOutlineLogout, HiOutlineChatAlt2 } from 'react-icons/hi';
+import { HiOutlineMenu, HiOutlineLogout, HiOutlineChatAlt2, HiOutlineDownload } from 'react-icons/hi';
+
 
 const Navbar = ({ onToggleSidebar }) => {
   const { user, logout } = useAuth();
   const location = useLocation();
+  const [deferredPrompt, setDeferredPrompt] = useState(null);
+
+  useEffect(() => {
+    const handleBeforeInstallPrompt = (e) => {
+      // Prevent the mini-infobar from appearing on mobile
+      e.preventDefault();
+      // Stash the event so it can be triggered later
+      setDeferredPrompt(e);
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    };
+  }, []);
+
+  const handleInstallClick = async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    console.log(`User response to the install prompt: ${outcome}`);
+    setDeferredPrompt(null);
+  };
+
 
   const getInitials = (name) => {
     if (!name) return '?';
@@ -24,6 +51,16 @@ const Navbar = ({ onToggleSidebar }) => {
       </div>
 
       <div className="flex items-center gap-2 md:gap-4">
+        {deferredPrompt && (
+          <button 
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold bg-primary-600 hover:bg-primary-700 text-white rounded-lg transition-colors shadow-sm" 
+            onClick={handleInstallClick} 
+            title="Install App"
+          >
+            <HiOutlineDownload size={18} />
+            <span className="hidden sm:inline">Install App</span>
+          </button>
+        )}
         <Link to="/chat" className="btn btn--ghost btn--icon" title="Messages">
           <HiOutlineChatAlt2 size={20} />
         </Link>

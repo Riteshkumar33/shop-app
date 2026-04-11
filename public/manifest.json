@@ -1,0 +1,29 @@
+{
+  "short_name": "ShopFlow",
+  "name": "ShopFlow Application Management",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "type": "image/svg+xml",
+      "sizes": "192x192"
+    },
+    {
+      "src": "/favicon.svg",
+      "type": "image/svg+xml",
+      "sizes": "512x512"
+    },
+    {
+      "src": "/favicon.svg",
+      "type": "image/svg+xml",
+      "sizes": "any",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#0B0C10",
+  "display": "standalone",
+  "scope": "/",
+  "theme_color": "#863bff",
+  "description": "A full-stack shop application.",
+  "orientation": "portrait-primary"
+}
