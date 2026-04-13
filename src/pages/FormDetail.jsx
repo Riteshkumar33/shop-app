@@ -79,6 +79,22 @@ const FormDetail = () => {
     day: 'numeric', month: 'long', year: 'numeric'
   }) : '—';
 
+  const handleDownload = async (doc) => {
+    try {
+      const response = await api.get(doc.url, { responseType: 'blob' });
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', doc.originalName || 'document');
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      toast.error('Failed to download document');
+    }
+  };
+
   const getDeadlineStatus = () => {
     if (!deadline?.dueDate) return null;
     const due = new Date(deadline.dueDate);
@@ -180,10 +196,10 @@ const FormDetail = () => {
                         {(doc.sizeBytes / 1024).toFixed(0)} KB
                       </div>
                     </div>
-                    <a href={`https://shop-backend-qspq.onrender.com${doc.url}`} target="_blank" rel="noopener noreferrer"
+                    <button onClick={() => handleDownload(doc)}
                       className="btn btn--ghost btn--icon btn--sm">
                       <HiOutlineDownload />
-                    </a>
+                    </button>
                   </div>
                 ))}
               </div>
