@@ -90,14 +90,8 @@ const FormSubmission = () => {
     }
     setLoading(true);
     try {
-      // 1. Create form — clean up empty fields
-      const cleanData = { ...formData };
-      if (!cleanData.dateOfBirth) cleanData.dateOfBirth = null;
-      if (!cleanData.email) delete cleanData.email;
-      if (!cleanData.address) delete cleanData.address;
-      if (!cleanData.description) delete cleanData.description;
-
-      const { data: form } = await api.post('/forms', cleanData);
+      // 1. Create form
+      const { data: form } = await api.post('/forms', formData);
       toast.success('Form submitted!');
 
       // 2. Upload files
