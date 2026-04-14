@@ -32,7 +32,12 @@ const getMimeFromExt = (name) => {
   return map[ext] || '';
 };
 
-/* ───────── image compressor (uses Canvas API) ───────── */
+/* ───────── Canvas helper ───────── */
+
+const canvasToBlob = (canvas, mime, quality) =>
+  new Promise((resolve) => canvas.toBlob((b) => resolve(b), mime, quality));
+
+/* ───────── Image compressor (quality+dimension settings) ───────── */
 
 const compressImage = (file, settings) => {
   return new Promise((resolve, reject) => {
@@ -64,13 +69,10 @@ const compressImage = (file, settings) => {
         canvas.width = width;
         canvas.height = height;
         const ctx = canvas.getContext('2d');
-
-        // Smooth scaling
         ctx.imageSmoothingEnabled = true;
         ctx.imageSmoothingQuality = 'high';
         ctx.drawImage(img, 0, 0, width, height);
 
-        // Determine output format
         const outputFormat = settings.outputFormat || file.type || 'image/jpeg';
         const quality = (settings.quality || 80) / 100;
 
@@ -97,31 +99,161 @@ const compressImage = (file, settings) => {
   });
 };
 
-/* ───────── PDF compressor (re-serialize with pdf-lib) ───────── */
+/* ───────── Image compressor to EXACT target size ───────── */
+
+const compressImageToSize = async (file, targetBytes) => {
+  const blob = file instanceof Blob ? file : new Blob([await file.arrayBuffer()], { type: file.type });
+  const img = await createImageBitmap(blob);
+  const outputMime = 'image/jpeg';
+  let width = img.width;
+  let height = img.height;
+  let bestBlob = null;
+
+  for (let scale = 1.0; scale >= 0.05; scale -= 0.08) {
+    const w = Math.max(1, Math.round(width * scale));
+    const h = Math.max(1, Math.round(height * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(img, 0, 0, w, h);
+
+    let lo = 0.01, hi = 0.95;
+    for (let i = 0; i < 25; i++) {
+      const mid = (lo + hi) / 2;
+      const result = await canvasToBlob(canvas, outputMime, mid);
+      if (!result) break;
+      if (result.size <= targetBytes) {
+        bestBlob = result;
+        lo = mid + 0.005;
+      } else {
+        hi = mid - 0.005;
+      }
+      if (bestBlob && bestBlob.size >= targetBytes * 0.90) break;
+      if (hi <= lo) break;
+    }
+
+    if (bestBlob && bestBlob.size <= targetBytes) break;
+
+    const minBlob = await canvasToBlob(canvas, outputMime, 0.01);
+    if (minBlob && minBlob.size <= targetBytes) {
+      bestBlob = minBlob;
+      let lo2 = 0.01, hi2 = 0.95;
+      for (let j = 0; j < 20; j++) {
+        const mid2 = (lo2 + hi2) / 2;
+        const r = await canvasToBlob(canvas, outputMime, mid2);
+        if (!r) break;
+        if (r.size <= targetBytes) { bestBlob = r; lo2 = mid2 + 0.005; }
+        else { hi2 = mid2 - 0.005; }
+        if (bestBlob.size >= targetBytes * 0.90) break;
+        if (hi2 <= lo2) break;
+      }
+      break;
+    }
+  }
+
+  if (!bestBlob) throw new Error('Cannot compress to target size — try a larger value');
+  return {
+    blob: bestBlob,
+    width: img.width,
+    height: img.height,
+    originalWidth: img.width,
+    originalHeight: img.height,
+  };
+};
+
+/* ───────── PDF compressor (settings-based) ───────── */
 
 const compressPDF = async (file, settings) => {
   const arrayBuf = await file.arrayBuffer();
   const pdfDoc = await PDFDocument.load(arrayBuf, { ignoreEncryption: true });
 
-  // Remove metadata to reduce size
   if (settings.removeMetadata) {
-    pdfDoc.setTitle('');
-    pdfDoc.setAuthor('');
-    pdfDoc.setSubject('');
-    pdfDoc.setKeywords([]);
-    pdfDoc.setProducer('');
-    pdfDoc.setCreator('');
+    pdfDoc.setTitle(''); pdfDoc.setAuthor(''); pdfDoc.setSubject('');
+    pdfDoc.setKeywords([]); pdfDoc.setProducer(''); pdfDoc.setCreator('');
   }
 
-  // Serialize — pdf-lib re-serializes which can strip unused objects
-  const compressedBytes = await pdfDoc.save({
-    useObjectStreams: true,        // object-stream compression
-    addDefaultPage: false,
-    objectsPerTick: 100,
-  });
-
+  const compressedBytes = await pdfDoc.save({ useObjectStreams: true, addDefaultPage: false, objectsPerTick: 100 });
   const blob = new Blob([compressedBytes], { type: 'application/pdf' });
   return { blob, pages: pdfDoc.getPageCount() };
+};
+
+/* ───────── PDF compressor to EXACT target size ───────── */
+
+let _pdfjsPromise = null;
+const loadPdfJs = () => {
+  if (_pdfjsPromise) return _pdfjsPromise;
+  _pdfjsPromise = new Promise((resolve, reject) => {
+    if (window.pdfjsLib) return resolve(window.pdfjsLib);
+    const script = document.createElement('script');
+    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    script.onload = () => {
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+        'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+      resolve(window.pdfjsLib);
+    };
+    script.onerror = () => reject(new Error('Failed to load PDF.js'));
+    document.head.appendChild(script);
+  });
+  return _pdfjsPromise;
+};
+
+const compressPDFToSize = async (file, targetBytes) => {
+  const arrayBuf = await file.arrayBuffer();
+  const srcDoc = await PDFDocument.load(arrayBuf, { ignoreEncryption: true });
+  srcDoc.setTitle(''); srcDoc.setAuthor(''); srcDoc.setSubject('');
+  srcDoc.setKeywords([]); srcDoc.setProducer(''); srcDoc.setCreator('');
+  const quickBytes = await srcDoc.save({ useObjectStreams: true });
+  if (quickBytes.byteLength <= targetBytes) {
+    return { blob: new Blob([quickBytes], { type: 'application/pdf' }), pages: srcDoc.getPageCount() };
+  }
+
+  const pageCount = srcDoc.getPageCount();
+  const bytesPerPage = targetBytes / pageCount;
+  const pdfjsLib = await loadPdfJs();
+  const pdfTask = pdfjsLib.getDocument({ data: arrayBuf });
+  const pdfDoc = await pdfTask.promise;
+  const newDoc = await PDFDocument.create();
+
+  for (let i = 1; i <= pageCount; i++) {
+    const page = await pdfDoc.getPage(i);
+    const origViewport = page.getViewport({ scale: 1.0 });
+    let pageBlob = null;
+
+    for (let dpiScale = 1.5; dpiScale >= 0.2; dpiScale -= 0.15) {
+      const viewport = page.getViewport({ scale: dpiScale });
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(viewport.width);
+      canvas.height = Math.round(viewport.height);
+      const ctx = canvas.getContext('2d');
+      await page.render({ canvasContext: ctx, viewport }).promise;
+
+      let lo = 0.05, hi = 0.85, best = null;
+      for (let j = 0; j < 15; j++) {
+        const mid = (lo + hi) / 2;
+        const b = await canvasToBlob(canvas, 'image/jpeg', mid);
+        if (!b) break;
+        if (b.size <= bytesPerPage) { best = b; lo = mid + 0.01; }
+        else { hi = mid - 0.01; }
+        if (hi <= lo) break;
+      }
+      if (!best) best = await canvasToBlob(canvas, 'image/jpeg', 0.05);
+      if (best && best.size <= bytesPerPage) { pageBlob = best; break; }
+      pageBlob = best;
+    }
+
+    if (pageBlob) {
+      const jpegBytes = new Uint8Array(await pageBlob.arrayBuffer());
+      const jpegImage = await newDoc.embedJpg(jpegBytes);
+      const newPage = newDoc.addPage([origViewport.width, origViewport.height]);
+      newPage.drawImage(jpegImage, { x: 0, y: 0, width: origViewport.width, height: origViewport.height });
+    }
+  }
+
+  const finalBytes = await newDoc.save({ useObjectStreams: true });
+  return { blob: new Blob([finalBytes], { type: 'application/pdf' }), pages: pageCount };
 };
 
 /* ═══════════════════════════════════════════════════════════
@@ -132,8 +264,8 @@ const FileCompressor = () => {
   const fileInputRef = useRef(null);
 
   // Files state
-  const [files, setFiles] = useState([]);           // { id, file, preview, compressed, compressing, error, meta }
-  const [activeId, setActiveId] = useState(null);    // selected file id for settings
+  const [files, setFiles] = useState([]);
+  const [activeId, setActiveId] = useState(null);
 
   // Global settings
   const [settings, setSettings] = useState({
@@ -141,8 +273,9 @@ const FileCompressor = () => {
     scale: 100,
     maxWidth: 0,
     maxHeight: 0,
-    outputFormat: '',     // '' = keep original
+    outputFormat: '',
     removeMetadata: true,
+    targetSizeKB: '',       // target file size in KB (empty = use quality/scale mode)
   });
 
   const nextId = useRef(0);
@@ -184,7 +317,7 @@ const FileCompressor = () => {
       return prev.filter((f) => f.id !== id);
     });
     if (activeId === id) {
-      setActiveId((prev) => {
+      setActiveId(() => {
         const remaining = files.filter((f) => f.id !== id);
         return remaining.length > 0 ? remaining[0].id : null;
       });
@@ -202,14 +335,20 @@ const FileCompressor = () => {
 
     try {
       const isImage = item.file.type.startsWith('image/');
+      const targetKB = parseFloat(settings.targetSizeKB);
+      const useTargetMode = targetKB > 0;
+
       let result;
 
       if (isImage) {
-        const imgSettings = {
-          ...settings,
-          outputFormat: settings.outputFormat || item.file.type,
-        };
-        result = await compressImage(item.file, imgSettings);
+        if (useTargetMode) {
+          // Target size mode
+          result = await compressImageToSize(item.file, targetKB * 1024);
+        } else {
+          // Quality/scale mode
+          const imgSettings = { ...settings, outputFormat: settings.outputFormat || item.file.type };
+          result = await compressImage(item.file, imgSettings);
+        }
         const url = URL.createObjectURL(result.blob);
         setFiles((prev) =>
           prev.map((f) =>
@@ -217,11 +356,7 @@ const FileCompressor = () => {
               ? {
                   ...f,
                   compressing: false,
-                  compressed: {
-                    blob: result.blob,
-                    url,
-                    size: result.blob.size,
-                  },
+                  compressed: { blob: result.blob, url, size: result.blob.size },
                   meta: {
                     originalWidth: result.originalWidth,
                     originalHeight: result.originalHeight,
@@ -234,7 +369,11 @@ const FileCompressor = () => {
         );
       } else {
         // PDF
-        result = await compressPDF(item.file, settings);
+        if (useTargetMode) {
+          result = await compressPDFToSize(item.file, targetKB * 1024);
+        } else {
+          result = await compressPDF(item.file, settings);
+        }
         const url = URL.createObjectURL(result.blob);
         setFiles((prev) =>
           prev.map((f) =>
@@ -242,11 +381,7 @@ const FileCompressor = () => {
               ? {
                   ...f,
                   compressing: false,
-                  compressed: {
-                    blob: result.blob,
-                    url,
-                    size: result.blob.size,
-                  },
+                  compressed: { blob: result.blob, url, size: result.blob.size },
                   meta: { pages: result.pages },
                 }
               : f
@@ -278,7 +413,9 @@ const FileCompressor = () => {
     link.href = item.compressed.url;
     const ext = item.file.name.split('.').pop();
     const baseName = item.file.name.replace(/\.[^.]+$/, '');
-    link.download = `${baseName}_compressed.${ext}`;
+    const targetKB = parseFloat(settings.targetSizeKB);
+    const suffix = targetKB > 0 ? `_${targetKB}KB` : '_compressed';
+    link.download = `${baseName}${suffix}.${ext}`;
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -297,6 +434,7 @@ const FileCompressor = () => {
   const totalCompressed = files.reduce((s, f) => s + (f.compressed?.size || 0), 0);
   const compressedCount = files.filter((f) => f.compressed).length;
   const isImage = activeFile?.file?.type?.startsWith('image/');
+  const useTargetMode = parseFloat(settings.targetSizeKB) > 0;
 
   return (
     <div id="file-compressor-page" className="max-w-[1100px] mx-auto">
@@ -514,99 +652,106 @@ const FileCompressor = () => {
                 Compression Settings
               </h3>
 
-              {/* Quality slider (images) */}
-              <div className="form-group mb-4">
+              {/* ★ TARGET SIZE INPUT — the key feature ★ */}
+              <div className="form-group mb-5">
+                <label className="form-label text-xs flex items-center gap-1.5">
+                  🎯 Target File Size
+                  <span className="text-primary-400 font-bold text-[10px]">
+                    {useTargetMode ? 'ACTIVE' : 'OFF'}
+                  </span>
+                </label>
+                <div className="flex items-center gap-0">
+                  <input
+                    type="number"
+                    min="1"
+                    placeholder="e.g. 100"
+                    value={settings.targetSizeKB}
+                    onChange={(e) =>
+                      setSettings((s) => ({ ...s, targetSizeKB: e.target.value }))
+                    }
+                    className="flex-1 px-3 py-2.5 text-sm bg-bg-input border border-border-color rounded-l-lg text-text-primary outline-none focus:border-primary-400 transition-colors"
+                    id="target-size-input"
+                  />
+                  <span className="px-3 py-2.5 text-xs font-bold text-text-muted bg-bg-input border border-l-0 border-border-color rounded-r-lg uppercase tracking-wide">
+                    KB
+                  </span>
+                </div>
+                <p className="text-[10px] text-text-muted mt-1">
+                  {useTargetMode
+                    ? `Files will be compressed to ≤ ${settings.targetSizeKB} KB exactly`
+                    : 'Enter a value to compress to an exact file size (overrides quality/scale)'}
+                </p>
+              </div>
+
+              {/* Divider */}
+              <div className="flex items-center gap-3 mb-4">
+                <div className="flex-1 h-px bg-border-color"></div>
+                <span className="text-[10px] text-text-muted uppercase tracking-wider">
+                  {useTargetMode ? 'Target mode active — below settings ignored' : 'Or use manual settings'}
+                </span>
+                <div className="flex-1 h-px bg-border-color"></div>
+              </div>
+
+              {/* Quality slider */}
+              <div className={`form-group mb-4 transition-opacity ${useTargetMode ? 'opacity-30 pointer-events-none' : ''}`}>
                 <label className="form-label flex justify-between">
                   <span>Quality</span>
                   <span className="text-primary-400 font-bold">{settings.quality}%</span>
                 </label>
                 <input
-                  type="range"
-                  min="10"
-                  max="100"
-                  step="5"
+                  type="range" min="10" max="100" step="5"
                   value={settings.quality}
-                  onChange={(e) =>
-                    setSettings((s) => ({ ...s, quality: parseInt(e.target.value) }))
-                  }
+                  onChange={(e) => setSettings((s) => ({ ...s, quality: parseInt(e.target.value) }))}
                   className="w-full accent-primary-400 cursor-pointer"
-                  id="quality-slider"
-                  style={{ height: '6px' }}
+                  id="quality-slider" style={{ height: '6px' }}
                 />
                 <div className="flex justify-between text-[10px] text-text-muted -mt-1">
-                  <span>Smallest</span>
-                  <span>Best quality</span>
+                  <span>Smallest</span><span>Best quality</span>
                 </div>
               </div>
 
-              {/* Scale percentage */}
-              <div className="form-group mb-4">
+              {/* Scale */}
+              <div className={`form-group mb-4 transition-opacity ${useTargetMode ? 'opacity-30 pointer-events-none' : ''}`}>
                 <label className="form-label flex justify-between">
                   <span>Scale</span>
                   <span className="text-primary-400 font-bold">{settings.scale}%</span>
                 </label>
                 <input
-                  type="range"
-                  min="10"
-                  max="100"
-                  step="5"
+                  type="range" min="10" max="100" step="5"
                   value={settings.scale}
-                  onChange={(e) =>
-                    setSettings((s) => ({ ...s, scale: parseInt(e.target.value) }))
-                  }
+                  onChange={(e) => setSettings((s) => ({ ...s, scale: parseInt(e.target.value) }))}
                   className="w-full accent-primary-400 cursor-pointer"
-                  id="scale-slider"
-                  style={{ height: '6px' }}
+                  id="scale-slider" style={{ height: '6px' }}
                 />
                 <div className="flex justify-between text-[10px] text-text-muted -mt-1">
-                  <span>10%</span>
-                  <span>Original size</span>
+                  <span>10%</span><span>Original size</span>
                 </div>
               </div>
 
               {/* Max dimensions */}
-              <div className="grid grid-cols-2 gap-3 mb-4">
+              <div className={`grid grid-cols-2 gap-3 mb-4 transition-opacity ${useTargetMode ? 'opacity-30 pointer-events-none' : ''}`}>
                 <div className="form-group">
                   <label className="form-label text-xs">Max Width (px)</label>
-                  <input
-                    type="number"
-                    className="form-input text-sm py-2"
-                    placeholder="Auto"
+                  <input type="number" className="form-input text-sm py-2" placeholder="Auto"
                     value={settings.maxWidth || ''}
-                    onChange={(e) =>
-                      setSettings((s) => ({ ...s, maxWidth: parseInt(e.target.value) || 0 }))
-                    }
-                    min="0"
-                    id="max-width-input"
-                  />
+                    onChange={(e) => setSettings((s) => ({ ...s, maxWidth: parseInt(e.target.value) || 0 }))}
+                    min="0" id="max-width-input" />
                 </div>
                 <div className="form-group">
                   <label className="form-label text-xs">Max Height (px)</label>
-                  <input
-                    type="number"
-                    className="form-input text-sm py-2"
-                    placeholder="Auto"
+                  <input type="number" className="form-input text-sm py-2" placeholder="Auto"
                     value={settings.maxHeight || ''}
-                    onChange={(e) =>
-                      setSettings((s) => ({ ...s, maxHeight: parseInt(e.target.value) || 0 }))
-                    }
-                    min="0"
-                    id="max-height-input"
-                  />
+                    onChange={(e) => setSettings((s) => ({ ...s, maxHeight: parseInt(e.target.value) || 0 }))}
+                    min="0" id="max-height-input" />
                 </div>
               </div>
 
               {/* Output format */}
-              <div className="form-group mb-4">
+              <div className={`form-group mb-4 transition-opacity ${useTargetMode ? 'opacity-30 pointer-events-none' : ''}`}>
                 <label className="form-label text-xs">Output Format (images)</label>
-                <select
-                  className="form-input text-sm py-2"
-                  value={settings.outputFormat}
-                  onChange={(e) =>
-                    setSettings((s) => ({ ...s, outputFormat: e.target.value }))
-                  }
-                  id="format-select"
-                >
+                <select className="form-input text-sm py-2" value={settings.outputFormat}
+                  onChange={(e) => setSettings((s) => ({ ...s, outputFormat: e.target.value }))}
+                  id="format-select">
                   <option value="">Keep original</option>
                   <option value="image/jpeg">JPEG</option>
                   <option value="image/png">PNG</option>
@@ -614,24 +759,18 @@ const FileCompressor = () => {
                 </select>
               </div>
 
-              {/* PDF options */}
+              {/* PDF metadata */}
               <div className="form-group mb-4">
                 <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={settings.removeMetadata}
-                    onChange={(e) =>
-                      setSettings((s) => ({ ...s, removeMetadata: e.target.checked }))
-                    }
-                    className="w-4 h-4 accent-primary-400"
-                    id="remove-metadata-checkbox"
-                  />
+                  <input type="checkbox" checked={settings.removeMetadata}
+                    onChange={(e) => setSettings((s) => ({ ...s, removeMetadata: e.target.checked }))}
+                    className="w-4 h-4 accent-primary-400" id="remove-metadata-checkbox" />
                   <span className="text-sm">Remove PDF metadata</span>
                 </label>
               </div>
 
               {/* Presets */}
-              <div className="form-group">
+              <div className={`form-group transition-opacity ${useTargetMode ? 'opacity-30 pointer-events-none' : ''}`}>
                 <label className="form-label text-xs mb-2">Quick Presets</label>
                 <div className="grid grid-cols-2 gap-2">
                   {[
@@ -643,14 +782,10 @@ const FileCompressor = () => {
                     <button
                       key={preset.label}
                       onClick={() =>
-                        setSettings((s) => ({
-                          ...s,
-                          quality: preset.quality,
-                          scale: preset.scale,
-                        }))
+                        setSettings((s) => ({ ...s, quality: preset.quality, scale: preset.scale, targetSizeKB: '' }))
                       }
                       className={`text-xs py-2 px-3 rounded-lg border transition-all duration-200 font-medium ${
-                        settings.quality === preset.quality && settings.scale === preset.scale
+                        settings.quality === preset.quality && settings.scale === preset.scale && !useTargetMode
                           ? 'border-primary-400 bg-primary-500/10 text-primary-400'
                           : 'border-border-color bg-bg-glass text-text-secondary hover:border-primary-400/50 hover:text-text-primary'
                       }`}
