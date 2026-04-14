@@ -10,11 +10,12 @@ import {
   HiOutlineDownload,
   HiOutlineChatAlt2,
   HiOutlineCalendar,
+  HiOutlineTrash,
 } from 'react-icons/hi';
 
 const FormDetail = () => {
   const { id } = useParams();
-  const { user, isShopkeeper } = useAuth();
+  const { user, isShopkeeper, isCustomer } = useAuth();
   const toast = useToast();
   const navigate = useNavigate();
 
@@ -93,6 +94,19 @@ const FormDetail = () => {
       window.URL.revokeObjectURL(url);
     } catch (err) {
       toast.error('Failed to download document');
+    }
+  };
+
+  const handleDelete = async (doc) => {
+    const confirmed = window.confirm('Are you sure you want to delete this document?');
+    if (!confirmed) return;
+
+    try {
+      await api.delete(`/documents/${doc._id}`);
+      setDocuments(prev => prev.filter(d => d._id !== doc._id));
+      toast.success('Document deleted');
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to delete document');
     }
   };
 
@@ -197,10 +211,22 @@ const FormDetail = () => {
                         {(doc.sizeBytes / 1024).toFixed(0)} KB
                       </div>
                     </div>
-                    <button onClick={() => handleDownload(doc)}
-                      className="btn btn--ghost btn--icon btn--sm">
+                    <button
+                      onClick={() => handleDownload(doc)}
+                      className="btn btn--ghost btn--icon btn--sm"
+                      title="Download document"
+                    >
                       <HiOutlineDownload />
                     </button>
+                    {isCustomer && form.status === 'pending' && (
+                      <button
+                        onClick={() => handleDelete(doc)}
+                        className="btn btn--ghost btn--icon btn--sm text-danger-500"
+                        title="Delete document"
+                      >
+                        <HiOutlineTrash />
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>
