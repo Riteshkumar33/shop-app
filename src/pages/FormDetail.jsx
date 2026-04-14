@@ -17,111 +17,183 @@ import {
 /* ───────── Compression helpers ───────── */
 
 /**
- * Compress an image blob to a target size in bytes using binary-search on quality.
- * Returns a Blob that is as close to (but not exceeding) targetBytes as possible.
+ * Helper: convert canvas to blob at given quality (Promise-based).
  */
-const compressImageToSize = (blob, targetBytes, mimeType = 'image/jpeg') => {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    const url = URL.createObjectURL(blob);
+const canvasToBlob = (canvas, mime, quality) =>
+  new Promise((resolve) => canvas.toBlob((b) => resolve(b), mime, quality));
 
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      canvas.width = img.width;
-      canvas.height = img.height;
-      const ctx = canvas.getContext('2d');
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'high';
-      ctx.drawImage(img, 0, 0);
-      URL.revokeObjectURL(url);
+/**
+ * Compress an image blob to ≤ targetBytes.
+ * Strategy: binary-search on quality first, then progressively shrink
+ * dimensions until the target is met.
+ */
+const compressImageToSize = async (blob, targetBytes) => {
+  const img = await createImageBitmap(blob);
+  const outputMime = 'image/jpeg'; // JPEG gives best quality control
 
-      // For PNG, convert to JPEG for effective quality-based compression
-      const outputMime = mimeType === 'image/png' ? 'image/jpeg' : (mimeType || 'image/jpeg');
+  let width = img.width;
+  let height = img.height;
+  let bestBlob = null;
 
-      // Binary search on quality (0.05 – 1.0)
-      let lo = 0.05, hi = 1.0, bestBlob = null, attempts = 0;
+  // Outer loop: progressively shrink dimensions
+  for (let scale = 1.0; scale >= 0.05; scale -= 0.08) {
+    const w = Math.max(1, Math.round(width * scale));
+    const h = Math.max(1, Math.round(height * scale));
 
-      const tryQuality = (q) => {
-        canvas.toBlob(
-          (result) => {
-            attempts++;
-            if (!result) {
-              // fallback
-              if (bestBlob) return resolve(bestBlob);
-              return reject(new Error('Compression failed'));
-            }
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(img, 0, 0, w, h);
 
-            if (result.size <= targetBytes) {
-              bestBlob = result; // acceptable — try higher quality
-              lo = q + 0.01;
-            } else {
-              hi = q - 0.01; // too big — lower quality
-            }
+    // Binary search on quality at this dimension
+    let lo = 0.01, hi = 0.95;
+    for (let i = 0; i < 25; i++) {
+      const mid = (lo + hi) / 2;
+      const result = await canvasToBlob(canvas, outputMime, mid);
+      if (!result) break;
 
-            if (hi < lo || attempts > 20) {
-              // We're done — return the best we found, or the last try
-              resolve(bestBlob || result);
-            } else {
-              tryQuality((lo + hi) / 2);
-            }
-          },
-          outputMime,
-          q
-        );
-      };
+      if (result.size <= targetBytes) {
+        bestBlob = result;
+        lo = mid + 0.005; // try slightly higher quality
+      } else {
+        hi = mid - 0.005;
+      }
 
-      // First check: can we even reach the target at minimum quality?
-      canvas.toBlob(
-        (minBlob) => {
-          if (!minBlob) return reject(new Error('Compression failed'));
+      // Close enough — within 5% of target or exactly under
+      if (bestBlob && bestBlob.size >= targetBytes * 0.90) break;
+      if (hi <= lo) break;
+    }
 
-          if (minBlob.size <= targetBytes) {
-            // Achievable — start binary search
-            bestBlob = minBlob;
-            tryQuality(0.5);
-          } else {
-            // Even minimum quality is too big — scale down dimensions
-            const scaleFactor = Math.sqrt(targetBytes / minBlob.size) * 0.9;
-            const newW = Math.max(1, Math.round(img.width * scaleFactor));
-            const newH = Math.max(1, Math.round(img.height * scaleFactor));
-            canvas.width = newW;
-            canvas.height = newH;
-            ctx.imageSmoothingEnabled = true;
-            ctx.imageSmoothingQuality = 'high';
-            ctx.drawImage(img, 0, 0, newW, newH);
-            tryQuality(0.5);
-          }
-        },
-        outputMime,
-        0.05
-      );
-    };
+    // If we found a result at this scale, we're done
+    if (bestBlob && bestBlob.size <= targetBytes) break;
 
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(new Error('Failed to load image'));
-    };
-    img.src = url;
-  });
+    // Even at quality 0.01 the blob is too large — shrink dimensions more
+    const minBlob = await canvasToBlob(canvas, outputMime, 0.01);
+    if (minBlob && minBlob.size <= targetBytes) {
+      bestBlob = minBlob;
+      // Now fine-tune quality at this scale
+      let lo2 = 0.01, hi2 = 0.95;
+      for (let j = 0; j < 20; j++) {
+        const mid2 = (lo2 + hi2) / 2;
+        const r = await canvasToBlob(canvas, outputMime, mid2);
+        if (!r) break;
+        if (r.size <= targetBytes) {
+          bestBlob = r;
+          lo2 = mid2 + 0.005;
+        } else {
+          hi2 = mid2 - 0.005;
+        }
+        if (bestBlob.size >= targetBytes * 0.90) break;
+        if (hi2 <= lo2) break;
+      }
+      break;
+    }
+  }
+
+  if (!bestBlob) throw new Error('Cannot compress to target size — try a larger value');
+  return bestBlob;
 };
 
 /**
- * Compress a PDF blob by re-serializing with pdf-lib (strips unused objects, uses object streams).
+ * Compress a PDF to ≤ targetBytes by rasterizing pages at reduced resolution
+ * and re-assembling into a new PDF with embedded JPEG images.
  */
-const compressPDFBlob = async (blob) => {
+const compressPDFToSize = async (blob, targetBytes) => {
+  // First try simple re-serialization
   const arrayBuf = await blob.arrayBuffer();
-  const pdfDoc = await PDFDocument.load(arrayBuf, { ignoreEncryption: true });
+  const srcDoc = await PDFDocument.load(arrayBuf, { ignoreEncryption: true });
+  srcDoc.setTitle(''); srcDoc.setAuthor(''); srcDoc.setSubject('');
+  srcDoc.setKeywords([]); srcDoc.setProducer(''); srcDoc.setCreator('');
+  const quickBytes = await srcDoc.save({ useObjectStreams: true });
+  if (quickBytes.byteLength <= targetBytes) {
+    return new Blob([quickBytes], { type: 'application/pdf' });
+  }
 
-  // Strip metadata
-  pdfDoc.setTitle('');
-  pdfDoc.setAuthor('');
-  pdfDoc.setSubject('');
-  pdfDoc.setKeywords([]);
-  pdfDoc.setProducer('');
-  pdfDoc.setCreator('');
+  // Re-serialization wasn't enough — rasterize pages at lower DPI
+  const pageCount = srcDoc.getPageCount();
+  const bytesPerPage = targetBytes / pageCount;
 
-  const compressedBytes = await pdfDoc.save({ useObjectStreams: true, addDefaultPage: false });
-  return new Blob([compressedBytes], { type: 'application/pdf' });
+  // Use pdfjs-dist via CDN to render pages to canvas
+  const pdfjsLib = await loadPdfJs();
+  const pdfTask = pdfjsLib.getDocument({ data: arrayBuf });
+  const pdfDoc = await pdfTask.promise;
+
+  const newDoc = await PDFDocument.create();
+
+  for (let i = 1; i <= pageCount; i++) {
+    const page = await pdfDoc.getPage(i);
+    const origViewport = page.getViewport({ scale: 1.0 });
+
+    // Try progressively lower scales until page image fits budget
+    let pageBlob = null;
+    for (let dpiScale = 1.5; dpiScale >= 0.2; dpiScale -= 0.15) {
+      const viewport = page.getViewport({ scale: dpiScale });
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(viewport.width);
+      canvas.height = Math.round(viewport.height);
+      const ctx = canvas.getContext('2d');
+      await page.render({ canvasContext: ctx, viewport }).promise;
+
+      // Binary search on JPEG quality
+      let lo = 0.05, hi = 0.85, best = null;
+      for (let j = 0; j < 15; j++) {
+        const mid = (lo + hi) / 2;
+        const b = await canvasToBlob(canvas, 'image/jpeg', mid);
+        if (!b) break;
+        if (b.size <= bytesPerPage) {
+          best = b;
+          lo = mid + 0.01;
+        } else {
+          hi = mid - 0.01;
+        }
+        if (hi <= lo) break;
+      }
+      if (!best) {
+        best = await canvasToBlob(canvas, 'image/jpeg', 0.05);
+      }
+      if (best && best.size <= bytesPerPage) {
+        pageBlob = best;
+        break;
+      }
+      pageBlob = best; // keep reducing scale
+    }
+
+    if (pageBlob) {
+      const jpegBytes = new Uint8Array(await pageBlob.arrayBuffer());
+      const jpegImage = await newDoc.embedJpg(jpegBytes);
+      const newPage = newDoc.addPage([origViewport.width, origViewport.height]);
+      newPage.drawImage(jpegImage, {
+        x: 0, y: 0,
+        width: origViewport.width,
+        height: origViewport.height,
+      });
+    }
+  }
+
+  const finalBytes = await newDoc.save({ useObjectStreams: true });
+  return new Blob([finalBytes], { type: 'application/pdf' });
+};
+
+/** Lazy-load pdf.js from CDN (needed only for PDF rasterization) */
+let _pdfjsPromise = null;
+const loadPdfJs = () => {
+  if (_pdfjsPromise) return _pdfjsPromise;
+  _pdfjsPromise = new Promise((resolve, reject) => {
+    if (window.pdfjsLib) return resolve(window.pdfjsLib);
+    const script = document.createElement('script');
+    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    script.onload = () => {
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+        'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+      resolve(window.pdfjsLib);
+    };
+    script.onerror = () => reject(new Error('Failed to load PDF.js'));
+    document.head.appendChild(script);
+  });
+  return _pdfjsPromise;
 };
 
 /* ═══════════════════════════════════════════════════════════
@@ -245,10 +317,10 @@ const FormDetail = () => {
 
       if (isImage) {
         // 2a. Compress image to target size
-        compressedBlob = await compressImageToSize(originalBlob, targetBytes, doc.mimeType);
+        compressedBlob = await compressImageToSize(originalBlob, targetBytes);
       } else {
-        // 2b. Re-serialize PDF (pdf-lib can reduce size but not to an exact target)
-        compressedBlob = await compressPDFBlob(originalBlob);
+        // 2b. Compress PDF to target size (rasterizes pages if needed)
+        compressedBlob = await compressPDFToSize(originalBlob, targetBytes);
       }
 
       // 3. Trigger download
