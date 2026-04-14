@@ -9,8 +9,10 @@ import {
   HiOutlineRefresh,
   HiOutlineCheckCircle,
   HiOutlineX,
+  HiOutlineScissors,
 } from 'react-icons/hi';
 import { PDFDocument } from 'pdf-lib';
+import ImageCropper from '../components/ImageCropper';
 
 /* ───────── helpers ───────── */
 
@@ -266,6 +268,7 @@ const FileCompressor = () => {
   // Files state
   const [files, setFiles] = useState([]);
   const [activeId, setActiveId] = useState(null);
+  const [cropFileId, setCropFileId] = useState(null); // id of file being cropped
 
   // Global settings
   const [settings, setSettings] = useState({
@@ -322,6 +325,29 @@ const FileCompressor = () => {
         return remaining.length > 0 ? remaining[0].id : null;
       });
     }
+  };
+
+  /* ── Crop applied ── */
+  const handleCropApply = (id, croppedBlob, croppedUrl) => {
+    setFiles((prev) =>
+      prev.map((f) => {
+        if (f.id !== id) return f;
+        // Revoke old preview
+        if (f.preview) URL.revokeObjectURL(f.preview);
+        if (f.compressed?.url) URL.revokeObjectURL(f.compressed.url);
+        // Create a new File from the cropped blob
+        const croppedFile = new File([croppedBlob], f.file.name, { type: 'image/jpeg' });
+        return {
+          ...f,
+          file: croppedFile,
+          preview: croppedUrl,
+          compressed: null,
+          error: null,
+          meta: null,
+        };
+      })
+    );
+    setCropFileId(null);
   };
 
   /* ── Compress single file ── */
@@ -603,6 +629,18 @@ const FileCompressor = () => {
                       {item.compressed && !item.compressing && (
                         <HiOutlineCheckCircle size={18} className="text-green-400" />
                       )}
+                      {isImg && !item.compressing && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setCropFileId(item.id);
+                          }}
+                          className="btn btn--ghost btn--icon btn--sm"
+                          title="Crop image"
+                        >
+                          <HiOutlineScissors size={16} />
+                        </button>
+                      )}
                       {!item.compressing && !item.compressed && (
                         <button
                           onClick={(e) => {
@@ -878,6 +916,20 @@ const FileCompressor = () => {
           </div>
         </div>
       )}
+
+      {/* ── Image Cropper Modal ── */}
+      {cropFileId && (() => {
+        const cropItem = files.find((f) => f.id === cropFileId);
+        if (!cropItem || !cropItem.preview) return null;
+        return (
+          <ImageCropper
+            imageSrc={cropItem.preview}
+            fileName={cropItem.file.name}
+            onCancel={() => setCropFileId(null)}
+            onApply={(blob, url) => handleCropApply(cropFileId, blob, url)}
+          />
+        );
+      })()}
     </div>
   );
 };

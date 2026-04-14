@@ -9,7 +9,9 @@ import {
   HiOutlineArrowRight,
   HiOutlineArrowLeft,
   HiOutlineCheck,
+  HiOutlineScissors,
 } from 'react-icons/hi';
+import ImageCropper from '../../components/ImageCropper';
 
 const FormSubmission = () => {
   const { user } = useAuth();
@@ -32,6 +34,7 @@ const FormSubmission = () => {
   });
   const [files, setFiles] = useState([]);
   const [previews, setPreviews] = useState([]);
+  const [cropIndex, setCropIndex] = useState(null); // index of image being cropped
 
   useEffect(() => {
     const fetchShopkeepers = async () => {
@@ -82,6 +85,22 @@ const FormSubmission = () => {
       if (prev[index]?.url) URL.revokeObjectURL(prev[index].url);
       return prev.filter((_, i) => i !== index);
     });
+  };
+
+  /* ── Crop applied ── */
+  const handleCropApply = (index, croppedBlob, croppedUrl) => {
+    // Revoke old preview URL
+    if (previews[index]?.url) URL.revokeObjectURL(previews[index].url);
+
+    // Replace the file with the cropped version
+    const croppedFile = new File([croppedBlob], files[index].file.name, { type: 'image/jpeg' });
+    setFiles((prev) =>
+      prev.map((f, i) => (i === index ? { ...f, file: croppedFile } : f))
+    );
+    setPreviews((prev) =>
+      prev.map((p, i) => (i === index ? { ...p, url: croppedUrl } : p))
+    );
+    setCropIndex(null);
   };
 
   const handleSubmit = async () => {
@@ -251,6 +270,15 @@ const FormSubmission = () => {
                       <option value="id_proof">ID Proof</option>
                       <option value="other">Other</option>
                     </select>
+                    {p.type === 'image' && (
+                      <button
+                        className="btn btn--ghost btn--icon btn--sm"
+                        onClick={() => setCropIndex(i)}
+                        title="Crop image"
+                      >
+                        <HiOutlineScissors size={16} />
+                      </button>
+                    )}
                     <button className="btn btn--ghost btn--icon" onClick={() => removeFile(i)}>
                       <HiOutlineX />
                     </button>
@@ -310,6 +338,16 @@ const FormSubmission = () => {
           )}
         </div>
       </div>
+
+      {/* ── Image Cropper Modal ── */}
+      {cropIndex !== null && previews[cropIndex]?.url && (
+        <ImageCropper
+          imageSrc={previews[cropIndex].url}
+          fileName={previews[cropIndex].name}
+          onCancel={() => setCropIndex(null)}
+          onApply={(blob, url) => handleCropApply(cropIndex, blob, url)}
+        />
+      )}
     </div>
   );
 };
