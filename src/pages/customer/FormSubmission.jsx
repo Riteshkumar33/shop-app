@@ -9,7 +9,6 @@ import {
   HiOutlineArrowRight,
   HiOutlineArrowLeft,
   HiOutlineCheck,
-  HiOutlineScissors,
 } from 'react-icons/hi';
 import ImageCropper from '../../components/ImageCropper';
 
@@ -34,7 +33,8 @@ const FormSubmission = () => {
   });
   const [files, setFiles] = useState([]);
   const [previews, setPreviews] = useState([]);
-  const [cropIndex, setCropIndex] = useState(null); // index of image being cropped
+  // Crop queue: images waiting to be cropped before being added
+  const [cropQueue, setCropQueue] = useState([]); // [{ file, url }]
 
   useEffect(() => {
     const fetchShopkeepers = async () => {
@@ -66,17 +66,25 @@ const FormSubmission = () => {
       return true;
     });
 
-    setFiles(prev => [...prev, ...validFiles.map(f => ({ file: f, type: 'other' }))]);
-
-    // Generate previews for images
+    // Separate images (need crop) from PDFs (add directly)
+    const images = [];
     validFiles.forEach(f => {
       if (f.type.startsWith('image/')) {
-        const url = URL.createObjectURL(f);
-        setPreviews(prev => [...prev, { name: f.name, url, type: 'image' }]);
+        images.push({ file: f, url: URL.createObjectURL(f) });
       } else {
+        // PDF — add directly
+        setFiles(prev => [...prev, { file: f, type: 'other' }]);
         setPreviews(prev => [...prev, { name: f.name, url: null, type: 'pdf' }]);
       }
     });
+
+    // Queue images for cropping (crop modal will open for first one)
+    if (images.length > 0) {
+      setCropQueue(prev => [...prev, ...images]);
+    }
+
+    // Reset file input so same file can be re-selected
+    if (e.target) e.target.value = '';
   };
 
   const removeFile = (index) => {
@@ -87,20 +95,32 @@ const FormSubmission = () => {
     });
   };
 
-  /* ── Crop applied ── */
-  const handleCropApply = (index, croppedBlob, croppedUrl) => {
-    // Revoke old preview URL
-    if (previews[index]?.url) URL.revokeObjectURL(previews[index].url);
+  /* ── Crop applied: add cropped image to files list ── */
+  const handleCropApply = (croppedBlob, croppedUrl) => {
+    const current = cropQueue[0];
+    if (!current) return;
 
-    // Replace the file with the cropped version
-    const croppedFile = new File([croppedBlob], files[index].file.name, { type: 'image/jpeg' });
-    setFiles((prev) =>
-      prev.map((f, i) => (i === index ? { ...f, file: croppedFile } : f))
-    );
-    setPreviews((prev) =>
-      prev.map((p, i) => (i === index ? { ...p, url: croppedUrl } : p))
-    );
-    setCropIndex(null);
+    // Revoke the original preview
+    URL.revokeObjectURL(current.url);
+
+    const croppedFile = new File([croppedBlob], current.file.name, { type: 'image/jpeg' });
+    setFiles(prev => [...prev, { file: croppedFile, type: 'other' }]);
+    setPreviews(prev => [...prev, { name: current.file.name, url: croppedUrl, type: 'image' }]);
+
+    // Move to next in queue
+    setCropQueue(prev => prev.slice(1));
+  };
+
+  /* ── Skip crop: add original image as-is ── */
+  const handleCropSkip = () => {
+    const current = cropQueue[0];
+    if (!current) return;
+
+    setFiles(prev => [...prev, { file: current.file, type: 'other' }]);
+    setPreviews(prev => [...prev, { name: current.file.name, url: current.url, type: 'image' }]);
+
+    // Move to next in queue
+    setCropQueue(prev => prev.slice(1));
   };
 
   const handleSubmit = async () => {
@@ -270,15 +290,6 @@ const FormSubmission = () => {
                       <option value="id_proof">ID Proof</option>
                       <option value="other">Other</option>
                     </select>
-                    {p.type === 'image' && (
-                      <button
-                        className="btn btn--ghost btn--icon btn--sm"
-                        onClick={() => setCropIndex(i)}
-                        title="Crop image"
-                      >
-                        <HiOutlineScissors size={16} />
-                      </button>
-                    )}
                     <button className="btn btn--ghost btn--icon" onClick={() => removeFile(i)}>
                       <HiOutlineX />
                     </button>
@@ -339,13 +350,15 @@ const FormSubmission = () => {
         </div>
       </div>
 
-      {/* ── Image Cropper Modal ── */}
-      {cropIndex !== null && previews[cropIndex]?.url && (
+      {/* ── Auto Crop Modal (pops up for each queued image) ── */}
+      {cropQueue.length > 0 && (
         <ImageCropper
-          imageSrc={previews[cropIndex].url}
-          fileName={previews[cropIndex].name}
-          onCancel={() => setCropIndex(null)}
-          onApply={(blob, url) => handleCropApply(cropIndex, blob, url)}
+          imageSrc={cropQueue[0].url}
+          fileName={cropQueue[0].file.name}
+          onCancel={handleCropSkip}
+          onApply={handleCropApply}
+          skipLabel="Skip"
+          queueCount={cropQueue.length}
         />
       )}
     </div>

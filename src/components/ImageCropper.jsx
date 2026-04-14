@@ -9,8 +9,10 @@ import { HiOutlineX, HiOutlineCheck, HiOutlineRefresh } from 'react-icons/hi';
  *   onApply    — (croppedBlob: Blob, croppedUrl: string) => void
  *   onCancel   — () => void
  *   fileName   — original file name (for display)
+ *   skipLabel  — label for the cancel/skip button (default: 'Cancel')
+ *   queueCount — number of images remaining in queue (optional)
  */
-const ImageCropper = ({ imageSrc, onApply, onCancel, fileName }) => {
+const ImageCropper = ({ imageSrc, onApply, onCancel, fileName, skipLabel, queueCount }) => {
   const containerRef = useRef(null);
   const imgRef = useRef(null);
 
@@ -230,7 +232,12 @@ const ImageCropper = ({ imageSrc, onApply, onCancel, fileName }) => {
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-border-color">
           <div>
-            <h3 className="text-lg font-semibold">Crop Image</h3>
+            <h3 className="text-lg font-semibold">
+              Crop Image
+              {queueCount > 1 && (
+                <span className="text-xs font-normal text-text-muted ml-2">({queueCount} remaining)</span>
+              )}
+            </h3>
             <p className="text-xs text-text-muted mt-0.5">
               {fileName && <span className="mr-2">{fileName}</span>}
               {cropNatW > 0 && <span>{cropNatW} × {cropNatH} px</span>}
@@ -339,10 +346,9 @@ const ImageCropper = ({ imageSrc, onApply, onCancel, fileName }) => {
           )}
         </div>
 
-        {/* Footer */}
         <div className="flex items-center justify-end gap-3 p-4 border-t border-border-color">
           <button onClick={onCancel} className="btn btn--secondary btn--sm">
-            Cancel
+            {skipLabel || 'Cancel'}
           </button>
           <button onClick={handleApply} className="btn btn--primary btn--sm">
             <HiOutlineCheck size={14} /> Apply Crop

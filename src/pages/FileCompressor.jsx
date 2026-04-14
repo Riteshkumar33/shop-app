@@ -9,7 +9,6 @@ import {
   HiOutlineRefresh,
   HiOutlineCheckCircle,
   HiOutlineX,
-  HiOutlineScissors,
 } from 'react-icons/hi';
 import { PDFDocument } from 'pdf-lib';
 import ImageCropper from '../components/ImageCropper';
@@ -268,7 +267,9 @@ const FileCompressor = () => {
   // Files state
   const [files, setFiles] = useState([]);
   const [activeId, setActiveId] = useState(null);
-  const [cropFileId, setCropFileId] = useState(null); // id of file being cropped
+
+  // Crop queue: images waiting to be cropped before being added
+  const [cropQueue, setCropQueue] = useState([]); // [{ file, url }]
 
   // Global settings
   const [settings, setSettings] = useState({
@@ -278,7 +279,7 @@ const FileCompressor = () => {
     maxHeight: 0,
     outputFormat: '',
     removeMetadata: true,
-    targetSizeKB: '',       // target file size in KB (empty = use quality/scale mode)
+    targetSizeKB: '',
   });
 
   const nextId = useRef(0);
@@ -291,25 +292,60 @@ const FileCompressor = () => {
       return allowed.includes(mime) && f.size > 0;
     });
 
-    const newFiles = valid.map((file) => {
-      const id = ++nextId.current;
-      const isImage = file.type.startsWith('image/');
-      return {
-        id,
-        file,
-        preview: isImage ? URL.createObjectURL(file) : null,
-        compressed: null,
-        compressing: false,
-        error: null,
-        meta: null,
-      };
+    // Separate images (queue for crop) from PDFs (add directly)
+    const images = [];
+    const pdfFiles = [];
+    valid.forEach((file) => {
+      if (file.type.startsWith('image/')) {
+        images.push({ file, url: URL.createObjectURL(file) });
+      } else {
+        pdfFiles.push(file);
+      }
     });
 
-    setFiles((prev) => [...prev, ...newFiles]);
-    if (newFiles.length > 0 && !activeId) {
-      setActiveId(newFiles[0].id);
+    // Add PDFs directly
+    if (pdfFiles.length > 0) {
+      const newPdfs = pdfFiles.map((file) => {
+        const id = ++nextId.current;
+        return { id, file, preview: null, compressed: null, compressing: false, error: null, meta: null };
+      });
+      setFiles((prev) => [...prev, ...newPdfs]);
+      if (!activeId && newPdfs.length > 0) setActiveId(newPdfs[0].id);
+    }
+
+    // Queue images for cropping
+    if (images.length > 0) {
+      setCropQueue((prev) => [...prev, ...images]);
     }
   }, [activeId]);
+
+  /* ── Crop applied: add cropped image to files list ── */
+  const handleCropApply = (croppedBlob, croppedUrl) => {
+    const current = cropQueue[0];
+    if (!current) return;
+    URL.revokeObjectURL(current.url);
+
+    const id = ++nextId.current;
+    const croppedFile = new File([croppedBlob], current.file.name, { type: 'image/jpeg' });
+    const newItem = { id, file: croppedFile, preview: croppedUrl, compressed: null, compressing: false, error: null, meta: null };
+    setFiles((prev) => [...prev, newItem]);
+    if (!activeId) setActiveId(id);
+
+    setCropQueue((prev) => prev.slice(1));
+  };
+
+  /* ── Skip crop: add original image as-is ── */
+  const handleCropSkip = () => {
+    const current = cropQueue[0];
+    if (!current) return;
+
+    const id = ++nextId.current;
+    const newItem = { id, file: current.file, preview: current.url, compressed: null, compressing: false, error: null, meta: null };
+    setFiles((prev) => [...prev, newItem]);
+    if (!activeId) setActiveId(id);
+
+    setCropQueue((prev) => prev.slice(1));
+  };
 
   /* ── Remove file ── */
   const removeFile = (id) => {
@@ -325,29 +361,6 @@ const FileCompressor = () => {
         return remaining.length > 0 ? remaining[0].id : null;
       });
     }
-  };
-
-  /* ── Crop applied ── */
-  const handleCropApply = (id, croppedBlob, croppedUrl) => {
-    setFiles((prev) =>
-      prev.map((f) => {
-        if (f.id !== id) return f;
-        // Revoke old preview
-        if (f.preview) URL.revokeObjectURL(f.preview);
-        if (f.compressed?.url) URL.revokeObjectURL(f.compressed.url);
-        // Create a new File from the cropped blob
-        const croppedFile = new File([croppedBlob], f.file.name, { type: 'image/jpeg' });
-        return {
-          ...f,
-          file: croppedFile,
-          preview: croppedUrl,
-          compressed: null,
-          error: null,
-          meta: null,
-        };
-      })
-    );
-    setCropFileId(null);
   };
 
   /* ── Compress single file ── */
@@ -629,18 +642,6 @@ const FileCompressor = () => {
                       {item.compressed && !item.compressing && (
                         <HiOutlineCheckCircle size={18} className="text-green-400" />
                       )}
-                      {isImg && !item.compressing && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setCropFileId(item.id);
-                          }}
-                          className="btn btn--ghost btn--icon btn--sm"
-                          title="Crop image"
-                        >
-                          <HiOutlineScissors size={16} />
-                        </button>
-                      )}
                       {!item.compressing && !item.compressed && (
                         <button
                           onClick={(e) => {
@@ -917,19 +918,17 @@ const FileCompressor = () => {
         </div>
       )}
 
-      {/* ── Image Cropper Modal ── */}
-      {cropFileId && (() => {
-        const cropItem = files.find((f) => f.id === cropFileId);
-        if (!cropItem || !cropItem.preview) return null;
-        return (
-          <ImageCropper
-            imageSrc={cropItem.preview}
-            fileName={cropItem.file.name}
-            onCancel={() => setCropFileId(null)}
-            onApply={(blob, url) => handleCropApply(cropFileId, blob, url)}
-          />
-        );
-      })()}
+      {/* ── Auto Crop Modal (pops up for each queued image) ── */}
+      {cropQueue.length > 0 && (
+        <ImageCropper
+          imageSrc={cropQueue[0].url}
+          fileName={cropQueue[0].file.name}
+          onCancel={handleCropSkip}
+          onApply={handleCropApply}
+          skipLabel="Skip"
+          queueCount={cropQueue.length}
+        />
+      )}
     </div>
   );
 };
