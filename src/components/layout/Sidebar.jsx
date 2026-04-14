@@ -28,22 +28,29 @@ const Sidebar = ({ isOpen }) => {
   const links = user?.role === 'shopkeeper' ? shopkeeperLinks : customerLinks;
 
   return (
-    <aside className={`sidebar ${isOpen ? 'sidebar--open' : 'sidebar--collapsed'}`} id="main-sidebar">
-      <div className="sidebar__section">
-        <div className="sidebar__section-title">Navigation</div>
-        {links.map(link => (
-          <NavLink
-            key={link.to}
-            to={link.to}
-            className={({ isActive }) =>
-              `sidebar__link ${isActive ? 'sidebar__link--active' : ''}`
-            }
-            end={link.to === '/dashboard'}
-          >
-            <span className="sidebar__link-icon">{link.icon}</span>
-            {link.label}
-          </NavLink>
-        ))}
+    <aside
+      className={`fixed top-0 left-0 h-screen bg-bg-secondary border-r border-border-color transition-transform duration-300 ease-in-out z-40 overflow-hidden
+        ${isOpen ? 'translate-x-0 w-64' : '-translate-x-full w-0'}
+        ${isOpen ? 'md:w-64' : 'md:w-0'}`}
+      id="main-sidebar"
+    >
+      <div className="p-4 pt-20 w-64">
+        <div className="sidebar__section">
+          <div className="sidebar__section-title">Navigation</div>
+          {links.map(link => (
+            <NavLink
+              key={link.to}
+              to={link.to}
+              className={({ isActive }) =>
+                `sidebar__link ${isActive ? 'sidebar__link--active' : ''}`
+              }
+              end={link.to === '/dashboard'}
+            >
+              <span className="sidebar__link-icon">{link.icon}</span>
+              <span className="truncate">{link.label}</span>
+            </NavLink>
+          ))}
+        </div>
       </div>
     </aside>
   );
