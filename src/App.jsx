@@ -12,6 +12,7 @@ import FormSubmission from './pages/customer/FormSubmission';
 import FormDetail from './pages/FormDetail';
 import FormsList from './pages/FormsList';
 import ChatPage from './pages/chat/ChatPage';
+import FileCompressor from './pages/FileCompressor';
 
 // Protected route wrapper
 const ProtectedRoute = ({ children }) => {
@@ -72,6 +73,7 @@ function AppRoutes() {
         <Route path="forms/:id" element={<FormDetail />} />
         <Route path="chat" element={<ChatPage />} />
         <Route path="chat/:chatId" element={<ChatPage />} />
+        <Route path="tools/compress" element={<FileCompressor />} />
       </Route>
 
       {/* Fallback */}

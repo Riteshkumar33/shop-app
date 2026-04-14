@@ -7,6 +7,7 @@ import {
   HiOutlineChatAlt2,
   HiOutlineClock,
   HiOutlineUserGroup,
+  HiOutlineAdjustments,
 } from 'react-icons/hi';
 
 const Sidebar = ({ isOpen }) => {
@@ -17,12 +18,14 @@ const Sidebar = ({ isOpen }) => {
     { to: '/forms/new', icon: <HiOutlinePlusCircle />, label: 'New Application' },
     { to: '/forms', icon: <HiOutlineDocumentText />, label: 'My Forms' },
     { to: '/chat', icon: <HiOutlineChatAlt2 />, label: 'Messages' },
+    { to: '/tools/compress', icon: <HiOutlineAdjustments />, label: 'File Compressor' },
   ];
 
   const shopkeeperLinks = [
     { to: '/dashboard', icon: <HiOutlineViewGrid />, label: 'Dashboard' },
     { to: '/forms', icon: <HiOutlineDocumentText />, label: 'Forms Queue' },
     { to: '/chat', icon: <HiOutlineChatAlt2 />, label: 'Messages' },
+    { to: '/tools/compress', icon: <HiOutlineAdjustments />, label: 'File Compressor' },
   ];
 
   const links = user?.role === 'shopkeeper' ? shopkeeperLinks : customerLinks;
