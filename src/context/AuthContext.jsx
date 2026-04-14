@@ -56,6 +56,7 @@ export const AuthProvider = ({ children }) => {
     setToken(null);
     setUser(null);
     disconnectSocket();
+    window.location.href = '/login';
   }, []);
 
   const value = {
